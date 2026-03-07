@@ -9,7 +9,7 @@ import (
 
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
-	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/provider"
 	"github.com/robofuse/robofuse/pkg/tracking"
 	"github.com/rs/zerolog"
 )
@@ -42,7 +42,7 @@ type SyncResult struct {
 }
 
 // Sync synchronizes STRM files with the candidate list
-func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*SyncResult, error) {
+func (s *Service) Sync(candidates []provider.STRMCandidate, dryRun bool) (*SyncResult, error) {
 	result := &SyncResult{}
 
 	// Ensure output directory exists
@@ -60,7 +60,7 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 
 	// Step 2: Build expected map from candidates
 	expected := make(map[string]string) // relativePath -> downloadURL
-	candidateMap := make(map[string]realdebrid.STRMCandidate)
+	candidateMap := make(map[string]provider.STRMCandidate)
 	for _, c := range candidates {
 		path := s.buildSTRMPath(c.TorrentFolder, c.Filename)
 		expected[path] = c.DownloadURL

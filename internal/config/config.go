@@ -17,6 +17,7 @@ var (
 
 // Config holds the application configuration
 type Config struct {
+	Provider           string `json:"provider"` // "real-debrid" or "torbox" (default: "real-debrid")
 	Token              string `json:"token"`
 	OutputDir          string `json:"output_dir"`
 	OrganizedDir       string `json:"organized_dir"`
@@ -46,6 +47,7 @@ type Config struct {
 // defaults returns a Config with default values
 func defaults() *Config {
 	return &Config{
+		Provider:           "real-debrid",
 		Token:              "",
 		OutputDir:          "./library",
 		OrganizedDir:       "./library-organized",
@@ -116,8 +118,21 @@ func Load(configPath string) (*Config, error) {
 
 // Validate checks the configuration for required fields
 func (c *Config) Validate() error {
-	if c.Token == "" || c.Token == "YOUR_RD_API_TOKEN" {
-		return fmt.Errorf("Real-Debrid API token is required")
+	// Normalize provider name
+	if c.Provider == "" {
+		c.Provider = "real-debrid"
+	}
+	switch c.Provider {
+	case "real-debrid", "realdebrid", "rd":
+		c.Provider = "real-debrid"
+	case "torbox", "tb":
+		c.Provider = "torbox"
+	default:
+		return fmt.Errorf("unsupported provider: %s (use 'real-debrid' or 'torbox')", c.Provider)
+	}
+
+	if c.Token == "" || c.Token == "YOUR_RD_API_TOKEN" || c.Token == "YOUR_API_TOKEN" {
+		return fmt.Errorf("API token is required (set 'token' in config)")
 	}
 
 	if c.ConcurrentRequests < 1 {

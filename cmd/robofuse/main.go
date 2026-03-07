@@ -8,7 +8,10 @@ import (
 
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/pkg/provider"
+	"github.com/robofuse/robofuse/pkg/realdebrid"
 	"github.com/robofuse/robofuse/pkg/sync"
+	"github.com/robofuse/robofuse/pkg/torbox"
 )
 
 var version = "1.1.2"
@@ -67,6 +70,8 @@ func main() {
 		printBanner()
 	}
 
+	log.Info().Str("provider", cfg.Provider).Msg("Using debrid provider")
+
 	switch command {
 	case "run":
 		log.Info().Msg("run | mode=once dry=false")
@@ -110,7 +115,7 @@ func printBanner() {
 }
 
 func printUsage() {
-	fmt.Printf(`robofuse v%s - Real-Debrid STRM file generator
+	fmt.Printf(`robofuse v%s - Debrid STRM file generator (Real-Debrid, TorBox)
 
 Usage: robofuse [options] <command>
 
@@ -132,10 +137,21 @@ Examples:
 `, version)
 }
 
+// newProvider creates the appropriate debrid provider based on config.
+func newProvider(cfg *config.Config) provider.Provider {
+	switch cfg.Provider {
+	case "torbox":
+		return torbox.NewProvider(torbox.New(cfg))
+	default:
+		return realdebrid.NewProvider(realdebrid.New(cfg))
+	}
+}
+
 func runSync(cfg *config.Config, dryRun bool) {
 	log := logger.Default()
 
-	service := sync.New(cfg)
+	p := newProvider(cfg)
+	service := sync.New(p, cfg)
 	result, err := service.Run(dryRun)
 	if err != nil {
 		log.Error().Err(err).Msg("Sync failed")
@@ -170,7 +186,8 @@ func runSync(cfg *config.Config, dryRun bool) {
 func runWatch(cfg *config.Config) {
 	log := logger.Default()
 
-	service := sync.New(cfg)
+	p := newProvider(cfg)
+	service := sync.New(p, cfg)
 	if err := service.Watch(); err != nil {
 		log.Error().Err(err).Msg("Watch mode failed")
 		os.Exit(1)

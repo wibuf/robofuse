@@ -5,7 +5,7 @@ import (
 
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
-	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/provider"
 	"github.com/rs/zerolog"
 )
 
@@ -13,22 +13,22 @@ import (
 
 // Service handles torrent repair operations
 type Service struct {
-	rd     *realdebrid.Client
+	p      provider.Provider
 	config *config.Config
 	logger zerolog.Logger
 }
 
-// New creates a new repair service
-func New(rd *realdebrid.Client, cfg *config.Config) *Service {
+// NewWithProvider creates a new repair service using the provider interface.
+func NewWithProvider(p provider.Provider, cfg *config.Config) *Service {
 	return &Service{
-		rd:     rd,
+		p:      p,
 		config: cfg,
 		logger: logger.New("repair"),
 	}
 }
 
 // RepairTorrent attempts to repair a dead/failed torrent by reinserting via magnet
-func (s *Service) RepairTorrent(torrent *realdebrid.Torrent, dryRun bool) error {
+func (s *Service) RepairTorrent(torrent *provider.Torrent, dryRun bool) error {
 	s.logger.Info().
 		Str("id", torrent.ID).
 		Str("filename", torrent.Filename).
@@ -41,23 +41,23 @@ func (s *Service) RepairTorrent(torrent *realdebrid.Torrent, dryRun bool) error 
 	}
 
 	// Step 1: Add magnet
-	newID, err := s.rd.AddMagnet(torrent.Hash)
+	newID, err := s.p.AddMagnet(torrent.Hash)
 	if err != nil {
 		return fmt.Errorf("adding magnet: %w", err)
 	}
 	s.logger.Debug().Str("newId", newID).Msg("Added magnet for repair")
 
 	// Step 2: Wait for file list and select video files
-	count, err := s.rd.SelectVideoFiles(newID)
+	count, err := s.p.SelectVideoFiles(newID)
 	if err != nil {
 		// Clean up the new torrent if selection fails
-		s.rd.DeleteTorrent(newID)
+		s.p.DeleteTorrent(newID)
 		return fmt.Errorf("selecting video files: %w", err)
 	}
 	s.logger.Debug().Int("files", count).Msg("Selected video files")
 
 	// Step 3: Delete the original dead torrent
-	if err := s.rd.DeleteTorrent(torrent.ID); err != nil {
+	if err := s.p.DeleteTorrent(torrent.ID); err != nil {
 		s.logger.Warn().Err(err).Msg("Failed to delete original torrent")
 		// Don't return error - the repair was successful
 	}
@@ -71,7 +71,7 @@ func (s *Service) RepairTorrent(torrent *realdebrid.Torrent, dryRun bool) error 
 }
 
 // RepairTorrents repairs multiple torrents
-func (s *Service) RepairTorrents(torrents []*realdebrid.Torrent, dryRun bool) (int, int) {
+func (s *Service) RepairTorrents(torrents []*provider.Torrent, dryRun bool) (int, int) {
 	if len(torrents) == 0 {
 		return 0, 0
 	}
@@ -104,15 +104,15 @@ func (s *Service) RepairTorrentByHash(hash string, dryRun bool) error {
 	}
 
 	// Add magnet
-	newID, err := s.rd.AddMagnet(hash)
+	newID, err := s.p.AddMagnet(hash)
 	if err != nil {
 		return fmt.Errorf("adding magnet: %w", err)
 	}
 
 	// Select video files
-	count, err := s.rd.SelectVideoFiles(newID)
+	count, err := s.p.SelectVideoFiles(newID)
 	if err != nil {
-		s.rd.DeleteTorrent(newID)
+		s.p.DeleteTorrent(newID)
 		return fmt.Errorf("selecting video files: %w", err)
 	}
 
