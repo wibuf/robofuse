@@ -1,5 +1,6 @@
 {
-  "token": "YOUR_RD_API_TOKEN",
+  "provider": "real-debrid",
+  "token": "YOUR_API_TOKEN",
   "output_dir": "./library",
   "organized_dir": "./library-organized",
   "cache_dir": "./cache",
