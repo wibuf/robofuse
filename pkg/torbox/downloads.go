@@ -17,7 +17,9 @@ const linkExpiryDuration = 3 * time.Hour
 
 // GetDownloads builds a download list from completed torrents and their files.
 // Unlike Real-Debrid, TorBox doesn't have a separate "downloads" cache.
-// Instead, we build the download list from torrent files, requesting download URLs on demand.
+// We use the requestdl redirect URL as the download URL — media players hit it
+// and get redirected to the actual file. This avoids needing to pre-fetch URLs
+// that expire after ~3 hours.
 func (c *Client) GetDownloads(torrents []*Torrent) ([]*Download, error) {
 	c.logger.Debug().Msg("Building downloads from torrent files...")
 
@@ -27,6 +29,11 @@ func (c *Client) GetDownloads(torrents []*Torrent) ([]*Download, error) {
 			// Build a synthetic link identifier for matching: "torbox://{torrent_id}/{file_id}"
 			link := fmt.Sprintf("torbox://%d/%d", t.ID, f.ID)
 
+			// Use the requestdl endpoint with redirect=true as the download URL.
+			// When a media player hits this URL, TorBox redirects to the actual file.
+			downloadURL := fmt.Sprintf("%s/torrents/requestdl?token=%s&torrent_id=%d&file_id=%d&redirect=true",
+				c.Host, c.APIKey, t.ID, f.ID)
+
 			downloads = append(downloads, &Download{
 				TorrentID: t.ID,
 				FileID:    f.ID,
@@ -34,6 +41,7 @@ func (c *Client) GetDownloads(torrents []*Torrent) ([]*Download, error) {
 				MimeType:  f.MimeType,
 				Filesize:  f.Size,
 				Link:      link,
+				URL:       downloadURL,
 			})
 		}
 	}

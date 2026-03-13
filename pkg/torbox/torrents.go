@@ -123,41 +123,50 @@ func (c *Client) AddMagnet(hash string) (string, error) {
 	return id, nil
 }
 
-// SelectVideoFiles selects video files from a torrent.
-// TorBox doesn't have a file selection step like Real-Debrid — files are available immediately.
-// This returns the count of video files in the torrent.
-func (c *Client) SelectVideoFiles(torrentID string) (int, error) {
-	// Fetch torrent info to count video files
+// GetTorrentByID fetches a single torrent by ID.
+func (c *Client) GetTorrentByID(torrentID string) (*Torrent, error) {
 	url := fmt.Sprintf("%s/torrents/mylist?id=%s", c.Host, torrentID)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("fetching torrent info: %w", err)
+		return nil, fmt.Errorf("fetching torrent info: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("reading response: %w", err)
+		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
 	}
 
 	var apiResp APIResponse[*Torrent]
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return 0, fmt.Errorf("parsing torrent info: %w", err)
+		return nil, fmt.Errorf("parsing torrent info: %w", err)
 	}
 
 	if !apiResp.Success || apiResp.Data == nil {
-		return 0, fmt.Errorf("torrent not found: %s", torrentID)
+		return nil, fmt.Errorf("torrent not found: %s", torrentID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// SelectVideoFiles selects video files from a torrent.
+// TorBox doesn't have a file selection step like Real-Debrid — files are available immediately.
+// This returns the count of video files in the torrent.
+func (c *Client) SelectVideoFiles(torrentID string) (int, error) {
+	torrent, err := c.GetTorrentByID(torrentID)
+	if err != nil {
+		return 0, err
 	}
 
 	count := 0
 	minSize := c.config.MinFileSizeBytes()
-	for _, f := range apiResp.Data.Files {
+	for _, f := range torrent.Files {
 		ext := strings.ToLower(filepath.Ext(f.Name))
 		if (ext == ".mkv" || ext == ".mp4") && f.Size >= minSize {
 			count++
