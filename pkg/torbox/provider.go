@@ -17,6 +17,9 @@ var _ provider.Provider = (*Provider)(nil)
 // Provider wraps the TorBox Client to implement the provider.Provider interface.
 type Provider struct {
 	*Client
+	// cachedTorrents stores the latest GetTorrents result to avoid duplicate API calls
+	// within the same sync cycle (GetDownloads needs the torrent list too).
+	cachedTorrents []*Torrent
 }
 
 // NewProvider creates a provider.Provider backed by TorBox.
@@ -30,23 +33,31 @@ func (p *Provider) Name() string {
 }
 
 // GetTorrents fetches torrents and returns them as provider types.
+// Caches the raw torrent list so GetDownloads() doesn't need a second API call.
 func (p *Provider) GetTorrents() ([]*provider.Torrent, []*provider.Torrent, error) {
 	downloaded, dead, err := p.Client.GetTorrents()
 	if err != nil {
 		return nil, nil, err
 	}
+	// Cache for GetDownloads() to reuse
+	p.cachedTorrents = downloaded
 	return convertTorrents(downloaded), convertTorrents(dead), nil
 }
 
 // GetDownloads fetches all completed torrent files as provider Downloads.
+// Reuses cached torrents from GetTorrents() if available.
 func (p *Provider) GetDownloads() ([]*provider.Download, error) {
-	// First get all completed torrents
-	downloaded, _, err := p.Client.GetTorrents()
-	if err != nil {
-		return nil, err
+	torrents := p.cachedTorrents
+	if torrents == nil {
+		// Fallback: fetch if GetTorrents() wasn't called first
+		var err error
+		torrents, _, err = p.Client.GetTorrents()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	tbDownloads, err := p.Client.GetDownloads(downloaded)
+	tbDownloads, err := p.Client.GetDownloads(torrents)
 	if err != nil {
 		return nil, err
 	}
@@ -124,20 +135,7 @@ func (p *Provider) CheckLink(link string) error {
 
 // getTorrentByID fetches a single torrent by ID.
 func (p *Provider) getTorrentByID(torrentID int) (*Torrent, error) {
-	url := fmt.Sprintf("%s/torrents/mylist?id=%d", p.Client.Host, torrentID)
-	// Reuse the client's GetTorrents for a single ID fetch
-	// This is a simplified inline request
-	downloaded, _, err := p.Client.GetTorrents()
-	if err != nil {
-		return nil, err
-	}
-	for _, t := range downloaded {
-		if t.ID == torrentID {
-			return t, nil
-		}
-	}
-	_ = url // suppress unused warning — we'd use the targeted endpoint in a real optimization
-	return nil, fmt.Errorf("torrent %d not found", torrentID)
+	return p.Client.GetTorrentByID(fmt.Sprintf("%d", torrentID))
 }
 
 // parseTorBoxLink parses a synthetic TorBox link "torbox://{torrent_id}/{file_id}".
