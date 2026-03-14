@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	ptt "github.com/itsrenoria/ptt-go"
 	"github.com/rs/zerolog"
@@ -166,7 +167,123 @@ func cleanFilename(name string) string {
 	return illegalCharsRegex.ReplaceAllString(name, "")
 }
 
+// isHexHash returns true if s looks like a hex hash (16+ contiguous hex chars, no spaces).
+func isHexHash(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 16 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// trailingGroupRegex matches release group tags that ptt-go missed.
+// Matches " -GroupName" and " .-GroupName" at end of title.
+// Won't match mid-title dashes like "Spider-Man" (no space before dash).
+var trailingGroupRegex = regexp.MustCompile(`\s+\.?-[A-Za-z0-9]+$`)
+
+// cleanTitle post-processes a ptt-go parsed title to remove leftover junk.
+func cleanTitle(title string) string {
+	if title == "" {
+		return title
+	}
+
+	// Skip cleaning if the title is a hash — caller should handle this
+	if isHexHash(title) {
+		return title
+	}
+
+	// Strip trailing release group patterns (e.g., " .-MeGusta", " -SPARKS")
+	title = trailingGroupRegex.ReplaceAllString(title, "")
+
+	// Strip trailing dots, dashes, underscores, spaces
+	title = strings.TrimRight(title, " .-_")
+
+	// Convert ALL CAPS to Title Case (e.g., "ONE PIECE" → "One Piece")
+	if len(title) > 3 && title == strings.ToUpper(title) {
+		title = toTitleCase(title)
+	}
+
+	return strings.TrimSpace(title)
+}
+
+// toTitleCase converts "ONE PIECE" to "One Piece".
+func toTitleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if len(w) == 0 {
+			continue
+		}
+		runes := []rune(strings.ToLower(w))
+		runes[0] = unicode.ToUpper(runes[0])
+		words[i] = string(runes)
+	}
+	return strings.Join(words, " ")
+}
+
+// normalizeForMatch strips year suffixes and normalizes a title for fuzzy comparison.
+func normalizeForMatch(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	// Strip year suffix like " (2022)"
+	if idx := strings.LastIndex(s, " ("); idx >= 0 {
+		rest := s[idx:]
+		if len(rest) == 7 && rest[len(rest)-1] == ')' {
+			s = s[:idx]
+		}
+	}
+	return s
+}
+
+// titlesMatch returns true if two titles refer to the same show,
+// accounting for pluralization and "the" prefix differences.
+func titlesMatch(a, b string) bool {
+	a = normalizeForMatch(a)
+	b = normalizeForMatch(b)
+
+	if a == b {
+		return true
+	}
+
+	// Check plural: "vladimir" vs "vladimirs"
+	// Only for multi-word titles or words with 5+ chars to avoid
+	// false positives on acronyms like NCIS/NCI.
+	if pluralMatch(a, b) {
+		return true
+	}
+
+	// Check with/without "the " prefix
+	aNoThe := strings.TrimPrefix(a, "the ")
+	bNoThe := strings.TrimPrefix(b, "the ")
+	if aNoThe == bNoThe {
+		return true
+	}
+	if pluralMatch(aNoThe, bNoThe) {
+		return true
+	}
+
+	return false
+}
+
+// pluralMatch returns true if a+"s"==b or b+"s"==a,
+// but only when the shorter form is multi-word or 5+ chars
+// (avoids false positives on acronyms like NCIS vs NCI).
+func pluralMatch(a, b string) bool {
+	if a+"s" == b && (len(a) >= 5 || strings.Contains(a, " ")) {
+		return true
+	}
+	if b+"s" == a && (len(b) >= 5 || strings.Contains(b, " ")) {
+		return true
+	}
+	return false
+}
+
 // findExistingSeriesFolder checks if a folder for the series already exists.
+// Uses fuzzy matching to handle pluralization ("Vladimir" vs "Vladimirs"),
+// "the" prefix differences, and year suffix variations.
 func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int) string {
 	searchDir := filepath.Join(o.organizedDir, baseFolder)
 	entries, err := os.ReadDir(searchDir)
@@ -174,13 +291,12 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 		return ""
 	}
 
-	normalizedTitle := strings.ToLower(strings.TrimSpace(title))
 	targetWithYear := title
 	if year > 0 {
 		targetWithYear = fmt.Sprintf("%s (%d)", title, year)
 	}
 
-	// Check for exact matches first
+	// Pass 1: Exact match (case-insensitive)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -190,17 +306,13 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 		}
 	}
 
-	// Check for title match with/without year
+	// Pass 2: Fuzzy match using titlesMatch (handles plurals, "the" prefix)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		folderLower := strings.ToLower(entry.Name())
-		if strings.HasPrefix(folderLower, normalizedTitle) {
-			remainder := strings.TrimSpace(strings.TrimPrefix(folderLower, normalizedTitle))
-			if remainder == "" || (strings.HasPrefix(remainder, "(") && strings.HasSuffix(remainder, ")") && len(remainder) == 6) {
-				return entry.Name()
-			}
+		if titlesMatch(title, entry.Name()) {
+			return entry.Name()
 		}
 	}
 
@@ -210,19 +322,20 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 // getContentTypeAndPath determines content type and destination path.
 func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string) (string, string) {
 	// Extract info from filename
-	fTitle := parsed.Title
+	fTitle := cleanTitle(parsed.Title)
 	fYear := parsed.Year
 	fSeason := parsed.Seasons
 	fEpisode := parsed.Episodes
 	fAnime := parsed.Anime
 
-	// Extract info from parent
+	// Extract info from parent — skip if parent title is a hex hash
+	// (TorBox sometimes returns the info hash as the torrent name)
 	pTitle := ""
 	pYear := 0
 	var pSeason, pEpisode []int
 	pAnime := false
-	if parentParsed != nil {
-		pTitle = parentParsed.Title
+	if parentParsed != nil && !isHexHash(parentParsed.Title) {
+		pTitle = cleanTitle(parentParsed.Title)
 		pYear = parentParsed.Year
 		pSeason = parentParsed.Seasons
 		pEpisode = parentParsed.Episodes
@@ -443,7 +556,7 @@ func (o *Organizer) Run() Result {
 		}
 
 		var parentParsed *ptt.TorrentInfo
-		if parentFolderName != "" {
+		if parentFolderName != "" && !isHexHash(parentFolderName) {
 			parentParsed = o.parser.Parse(parentFolderName)
 		}
 
