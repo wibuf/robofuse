@@ -430,11 +430,13 @@ func (s *Service) buildCandidatesInto(torrents []*provider.Torrent, downloadMap 
 				continue
 			}
 
-			// Check file type
+			// Check file type - only include video files
+			// Subtitles are skipped since STRM files are for streaming video;
+			// subtitle-only files cause the organizer to create bogus folders
+			// from language codes (e.g. "aze (2025)", "fre (2025)")
 			isVid := isVideo(download.Filename)
-			isSub := isSubtitle(download.Filename)
 
-			// Apply size filter ONLY to videos (not subtitles)
+			// Apply size filter to videos
 			if isVid && download.Filesize < minSize {
 				if stats != nil {
 					stats.FilteredSmall++
@@ -447,14 +449,14 @@ func (s *Service) buildCandidatesInto(torrents []*provider.Torrent, downloadMap 
 				continue
 			}
 
-			// Skip non-video, non-subtitle files
-			if !isVid && !isSub {
+			// Skip non-video files (subtitles, nfo, txt, etc.)
+			if !isVid {
 				if stats != nil {
 					stats.FilteredOther++
 				}
 				s.logger.Debug().
 					Str("filename", download.Filename).
-					Msg("Skipping non-video, non-subtitle file")
+					Msg("Skipping non-video file")
 				continue
 			}
 
