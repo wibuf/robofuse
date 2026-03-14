@@ -11,7 +11,7 @@ import (
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/robofuse/robofuse/internal/request"
 	"github.com/robofuse/robofuse/pkg/organizer"
-	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/provider"
 	"github.com/robofuse/robofuse/pkg/repair"
 	"github.com/robofuse/robofuse/pkg/retry"
 	"github.com/robofuse/robofuse/pkg/strm"
@@ -23,30 +23,28 @@ import (
 
 // Service orchestrates the entire sync process
 type Service struct {
-	rd            *realdebrid.Client
+	provider      provider.Provider
 	repairService *repair.Service
 	strmService   *strm.Service
 	retryQueue    *retry.Queue
 	config        *config.Config
 	logger        zerolog.Logger
 	// Reusable allocations for watch mode
-	downloadMap map[string]*realdebrid.Download
-	candidates  []realdebrid.STRMCandidate
+	downloadMap map[string]*provider.Download
+	candidates  []provider.STRMCandidate
 }
 
-// New creates a new sync service
-func New(cfg *config.Config) *Service {
-	rd := realdebrid.New(cfg)
-
+// New creates a new sync service with the given debrid provider.
+func New(p provider.Provider, cfg *config.Config) *Service {
 	return &Service{
-		rd:            rd,
-		repairService: repair.New(rd, cfg),
+		provider:      p,
+		repairService: repair.NewWithProvider(p, cfg),
 		strmService:   strm.New(cfg),
 		retryQueue:    retry.New(cfg.RetryQueueFile),
 		config:        cfg,
 		logger:        logger.New("sync"),
-		downloadMap:   make(map[string]*realdebrid.Download),
-		candidates:    make([]realdebrid.STRMCandidate, 0, 1024),
+		downloadMap:   make(map[string]*provider.Download),
+		candidates:    make([]provider.STRMCandidate, 0, 1024),
 	}
 }
 
@@ -83,7 +81,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 
 	// Step 1: Fetch all torrents
 	s.logger.Debug().Msg("Fetching torrents...")
-	downloaded, dead, err := s.rd.GetTorrents()
+	downloaded, dead, err := s.provider.GetTorrents()
 	if err != nil {
 		return nil, fmt.Errorf("fetching torrents: %w", err)
 	}
@@ -110,7 +108,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 
 		// Re-fetch torrents after repair
 		if repaired > 0 && !dryRun {
-			downloaded, _, err = s.rd.GetTorrents()
+			downloaded, _, err = s.provider.GetTorrents()
 			if err != nil {
 				s.logger.Warn().Err(err).Msg("Failed to re-fetch torrents after repair")
 			}
@@ -119,7 +117,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 
 	// Step 4: Fetch all downloads
 	s.logger.Debug().Msg("Fetching downloads...")
-	downloads, err := s.rd.GetDownloads()
+	downloads, err := s.provider.GetDownloads()
 	if err != nil {
 		return nil, fmt.Errorf("fetching downloads: %w", err)
 	}
@@ -286,7 +284,7 @@ func (s *Service) refreshExpiringLinks(interval time.Duration) {
 	var refreshed, failed int
 	for _, tracking := range expiredFiles {
 		// Unrestrict the original link to get a fresh download URL
-		download, err := s.rd.UnrestrictLink(tracking.Link)
+		download, err := s.provider.UnrestrictLink(tracking.Link)
 		if err != nil {
 			s.logger.Warn().
 				Err(err).
@@ -332,19 +330,19 @@ func (s *Service) printCycleSummary(result *RunResult, interval time.Duration) {
 
 // missingLink represents a link that needs unrestriction
 type missingLink struct {
-	torrent *realdebrid.Torrent
+	torrent *provider.Torrent
 	link    string
 }
 
 // unrestrictLinks unrestricts multiple links concurrently
-func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebrid.Download, []string, int) {
+func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*provider.Download, []string, int) {
 	if dryRun {
 		s.logger.Info().Int("count", len(links)).Msg("[DRY-RUN] Would unrestrict links")
 		return nil, nil, 0
 	}
 
 	var mu sync.Mutex
-	var results []*realdebrid.Download
+	var results []*provider.Download
 	var failed []string
 	completed := 0
 	queued := 0
@@ -360,7 +358,7 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 	for _, ml := range links {
 		ml := ml // capture
 		pool.Submit(func() {
-			download, err := s.rd.UnrestrictLink(ml.link)
+			download, err := s.provider.UnrestrictLink(ml.link)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -417,7 +415,7 @@ type candidateStats struct {
 }
 
 // buildCandidatesInto builds STRM candidates from torrents and downloads, reusing the provided slice.
-func (s *Service) buildCandidatesInto(torrents []*realdebrid.Torrent, downloadMap map[string]*realdebrid.Download, candidates []realdebrid.STRMCandidate, stats *candidateStats) []realdebrid.STRMCandidate {
+func (s *Service) buildCandidatesInto(torrents []*provider.Torrent, downloadMap map[string]*provider.Download, candidates []provider.STRMCandidate, stats *candidateStats) []provider.STRMCandidate {
 	minSize := s.config.MinFileSizeBytes()
 	if stats != nil {
 		stats.Candidates = 0
@@ -460,7 +458,7 @@ func (s *Service) buildCandidatesInto(torrents []*realdebrid.Torrent, downloadMa
 				continue
 			}
 
-			candidates = append(candidates, realdebrid.STRMCandidate{
+			candidates = append(candidates, provider.STRMCandidate{
 				TorrentID:     torrent.ID,
 				TorrentFolder: torrent.Filename,
 				Filename:      download.Filename,
@@ -478,13 +476,13 @@ func (s *Service) buildCandidatesInto(torrents []*realdebrid.Torrent, downloadMa
 }
 
 // findTorrentsForLinks finds torrents that contain the given failed links
-func (s *Service) findTorrentsForLinks(torrents []*realdebrid.Torrent, failedLinks []string) []*realdebrid.Torrent {
+func (s *Service) findTorrentsForLinks(torrents []*provider.Torrent, failedLinks []string) []*provider.Torrent {
 	failedSet := make(map[string]bool)
 	for _, link := range failedLinks {
 		failedSet[link] = true
 	}
 
-	torrentSet := make(map[string]*realdebrid.Torrent)
+	torrentSet := make(map[string]*provider.Torrent)
 	for _, torrent := range torrents {
 		for _, link := range torrent.Links {
 			if failedSet[link] {
@@ -494,7 +492,7 @@ func (s *Service) findTorrentsForLinks(torrents []*realdebrid.Torrent, failedLin
 		}
 	}
 
-	result := make([]*realdebrid.Torrent, 0, len(torrentSet))
+	result := make([]*provider.Torrent, 0, len(torrentSet))
 	for _, t := range torrentSet {
 		result = append(result, t)
 	}
@@ -502,7 +500,7 @@ func (s *Service) findTorrentsForLinks(torrents []*realdebrid.Torrent, failedLin
 }
 
 // countTotalLinks counts total links across all torrents
-func countTotalLinks(torrents []*realdebrid.Torrent) int {
+func countTotalLinks(torrents []*provider.Torrent) int {
 	count := 0
 	for _, t := range torrents {
 		count += len(t.Links)

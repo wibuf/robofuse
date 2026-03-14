@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/robofuse/robofuse/internal/request"
-	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/provider"
 )
 
 // retry_handler.go processes queued retry items across sync cycles.
@@ -18,7 +18,7 @@ type RetryStats struct {
 }
 
 // processRetryQueue processes items from the retry queue
-func (s *Service) processRetryQueue(torrents []*realdebrid.Torrent) *RetryStats {
+func (s *Service) processRetryQueue(torrents []*provider.Torrent) *RetryStats {
 	items := s.retryQueue.GetAll()
 	if len(items) == 0 {
 		return &RetryStats{}
@@ -27,7 +27,7 @@ func (s *Service) processRetryQueue(torrents []*realdebrid.Torrent) *RetryStats 
 	s.logger.Info().Int("count", len(items)).Msg("Processing retry queue")
 
 	// Build torrent map for looking up torrent info
-	torrentMap := make(map[string]*realdebrid.Torrent)
+	torrentMap := make(map[string]*provider.Torrent)
 	for _, t := range torrents {
 		torrentMap[t.ID] = t
 	}
@@ -63,7 +63,7 @@ func (s *Service) processRetryQueue(torrents []*realdebrid.Torrent) *RetryStats 
 			Int("attempt", item.RetryCount+1).
 			Msg("Retrying link")
 
-		download, err := s.rd.UnrestrictLink(item.Link)
+		download, err := s.provider.UnrestrictLink(item.Link)
 		if err != nil {
 			// Check if it's a retryable error (503)
 			if isRetryableError(err) {
@@ -120,7 +120,7 @@ func isRetryableError(err error) bool {
 }
 
 // addToRetryQueue adds a failed link to the retry queue
-func (s *Service) addToRetryQueue(link string, torrent *realdebrid.Torrent, err error) {
+func (s *Service) addToRetryQueue(link string, torrent *provider.Torrent, err error) {
 	if !isRetryableError(err) {
 		return // Don't queue non-retryable errors
 	}

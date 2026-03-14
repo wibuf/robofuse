@@ -10,9 +10,11 @@
 </p>
 
 # robofuse
-> **A high-performance Real-Debrid STRM file generator for your media server.**
+> **A high-performance debrid STRM file generator for your media server.**
 
-**robofuse** is a lightweight, blazing-fast service that interacts with the [Real-Debrid](https://real-debrid.com/) API to automatically organize your movie and TV library. It generates `.strm` files for use with media players like **Infuse**, **Jellyfin**, **Emby**, and ~~**Plex**~~ ([no longer supports `.strm` files](https://www.reddit.com/r/PleX/comments/8gtiv6/strm_file_support/)).
+**robofuse** is a lightweight, blazing-fast service that interacts with debrid provider APIs to automatically organize your movie and TV library. It generates `.strm` files for use with media players like **Infuse**, **Jellyfin**, **Emby**, and ~~**Plex**~~ ([no longer supports `.strm` files](https://www.reddit.com/r/PleX/comments/8gtiv6/strm_file_support/)).
+
+**Supported providers:** [Real-Debrid](https://real-debrid.com/) and [TorBox](https://torbox.app/).
 
 Rewritten from the ground up in **Go**, robofuse is designed for speed, efficiency, and stability.
 
@@ -35,7 +37,9 @@ Rewritten from the ground up in **Go**, robofuse is designed for speed, efficien
 
 ### Prerequisites
 
-- **Real-Debrid Account**: You need an API token from your [Real-Debrid Account Panel](https://real-debrid.com/apitoken).
+- **Debrid Account**: You need an API token from one of the supported providers:
+  - **Real-Debrid**: Get your token from the [Real-Debrid Account Panel](https://real-debrid.com/apitoken).
+  - **TorBox**: Get your token from the [TorBox Dashboard](https://torbox.app/settings).
 - **Install method**: Choose [Docker (recommended)](#install-docker), [Binary](#install-binary), or [Go Run](#install-go-run).
 - **Go version**: `1.21+` is required only for [Go Run](#install-go-run).
 
@@ -126,7 +130,8 @@ Edit `config.json` to customize robofuse:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `token` | string | **Required** | Your Real-Debrid API Token. |
+| `provider` | string | `"real-debrid"` | Debrid provider to use: `"real-debrid"` or `"torbox"`. |
+| `token` | string | **Required** | Your debrid provider API token. |
 | `output_dir` | string | `./library` | Where raw STRM files will be generated. |
 | `organized_dir` | string | `./library-organized` | Where renamed/organized STRM files will be placed if `ptt_rename` is set to `true`. |
 | `cache_dir` | string | `./cache` | Directory for storing state/cache. |
@@ -139,10 +144,13 @@ Edit `config.json` to customize robofuse:
 | `min_file_size_mb` | int | `150` | Ignore files smaller than this size (prevents samples), subtitles are ignored. |
 | `ptt_rename` | bool | `true` | Use PTT logic to clean/rename files. |
 | `log_level` | string | `"info"` | Logging verbosity (`debug`, `info`, `warn`, `error`). |
-| `file_expiry_days` | int | `6` | Days to consider a file as expired from downloads in real-debrid. |
+| `file_expiry_days` | int | `6` | Days to consider a file as expired. Real-Debrid links last ~7 days; TorBox links last ~3 hours. Adjust accordingly per provider. |
 
 > [!TIP]
-> The default rate limits are conservative and tuned for stability. You can raise them (for example `600+` general and `100+` concurrent), but results vary by library size and current Real-Debrid load.
+> **TorBox users**: TorBox download links expire after ~3 hours (vs ~7 days for Real-Debrid). Consider setting `file_expiry_days` to `0` and using watch mode for frequent refreshes.
+
+> [!TIP]
+> The default rate limits are conservative and tuned for stability. You can raise them (for example `600+` general and `100+` concurrent), but results vary by library size and current provider load.
 
 > [!IMPORTANT]
 > Don't delete `library`, `library-organized`, or `cache` by hand. These folders are part of the state/tracking system. If you need to reset, stop the service, back up what you need, then clear them intentionally.
@@ -229,4 +237,4 @@ This project wouldn't be possible without the foundational work of the open-sour
 
 ---
 
-*Not affiliated with Real-Debrid.*
+*Not affiliated with Real-Debrid or TorBox.*
