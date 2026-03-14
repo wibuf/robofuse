@@ -36,7 +36,7 @@ type Torrent struct {
 	DownloadFinished bool          `json:"download_finished"`
 	Files            []TorrentFile `json:"files"`
 	InactiveCheck    int           `json:"inactive_check"`
-	Availability     int           `json:"availability"`
+	Availability     float64       `json:"availability"`
 }
 
 // GetAddedAt parses the created_at timestamp.
