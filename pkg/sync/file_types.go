@@ -46,3 +46,9 @@ func isSubtitle(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	return subtitleExtensions[ext]
 }
+
+// isSampleFile checks if a filename looks like a sample file (e.g., "Sample.mkv").
+func isSampleFile(filename string) bool {
+	name := strings.ToLower(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
+	return name == "sample" || strings.HasPrefix(name, "sample-") || strings.HasPrefix(name, "sample.")
+}

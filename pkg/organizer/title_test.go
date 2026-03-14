@@ -95,6 +95,26 @@ func TestTitlesMatch(t *testing.T) {
 	}
 }
 
+func TestStripGroup(t *testing.T) {
+	tests := []struct {
+		title, group, want string
+	}{
+		{"Research A True Life Adventure Grym", "Grym", "Research A True Life Adventure"},
+		{"Zootopia Essa Cidade E O Bicho Grym", "Grym", "Zootopia Essa Cidade E O Bicho"},
+		{"The Fall Guy", "", "The Fall Guy"},         // no group
+		{"The Fall Guy", "SPARKS", "The Fall Guy"},   // group not in title
+		{"Spider-Man", "Man", "Spider-Man"},          // group in title but not as suffix with space
+		{"", "Grym", ""},                             // empty title
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := stripGroup(tt.title, tt.group); got != tt.want {
+				t.Errorf("stripGroup(%q, %q) = %q, want %q", tt.title, tt.group, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeForMatch(t *testing.T) {
 	tests := []struct {
 		input string

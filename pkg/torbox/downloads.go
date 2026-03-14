@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/robofuse/robofuse/internal/request"
@@ -15,6 +17,45 @@ import (
 // linkExpiryDuration is how long TorBox download links last (~3 hours).
 const linkExpiryDuration = 3 * time.Hour
 
+// bonusFolderPatterns contains folder names that indicate bonus/extras content.
+// TorBox file paths include the full torrent directory structure, so a file at
+// "Zootopia (2016)/Extras/Behind The Scenes.mkv" will be filtered out.
+var bonusFolderPatterns = []string{
+	"extras",
+	"extra",
+	"bonus",
+	"featurettes",
+	"featurette",
+	"behind the scenes",
+	"deleted scenes",
+	"special features",
+	"interviews",
+	"trailers",
+}
+
+// isBonusContent checks if a file path within a torrent is in a bonus/extras folder.
+func isBonusContent(filePath string) bool {
+	// Normalize separators and lowercase
+	filePath = strings.ToLower(filepath.ToSlash(filePath))
+	parts := strings.Split(filePath, "/")
+	// Check each directory segment (skip the last one which is the filename)
+	for _, part := range parts[:len(parts)-1] {
+		part = strings.TrimSpace(part)
+		for _, pattern := range bonusFolderPatterns {
+			if part == pattern {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isSampleFile checks if a filename looks like a sample file.
+func isSampleFile(filename string) bool {
+	name := strings.ToLower(strings.TrimSuffix(filename, filepath.Ext(filename)))
+	return name == "sample" || strings.HasPrefix(name, "sample-") || strings.HasPrefix(name, "sample.")
+}
+
 // GetDownloads builds a download list from completed torrents and their files.
 // Unlike Real-Debrid, TorBox doesn't have a separate "downloads" cache.
 // We use the requestdl redirect URL as the download URL — media players hit it
@@ -24,8 +65,21 @@ func (c *Client) GetDownloads(torrents []*Torrent) ([]*Download, error) {
 	c.logger.Debug().Msg("Building downloads from torrent files...")
 
 	var downloads []*Download
+	var skippedBonus, skippedSample int
 	for _, t := range torrents {
 		for _, f := range t.Files {
+			// Filter out bonus/extras content using the full file path
+			if f.Name != "" && isBonusContent(f.Name) {
+				skippedBonus++
+				continue
+			}
+
+			// Filter out sample files
+			if isSampleFile(f.ShortName) {
+				skippedSample++
+				continue
+			}
+
 			// Build a synthetic link identifier for matching: "torbox://{torrent_id}/{file_id}"
 			link := fmt.Sprintf("torbox://%d/%d", t.ID, f.ID)
 
@@ -44,6 +98,13 @@ func (c *Client) GetDownloads(torrents []*Torrent) ([]*Download, error) {
 				URL:       downloadURL,
 			})
 		}
+	}
+
+	if skippedBonus > 0 || skippedSample > 0 {
+		c.logger.Debug().
+			Int("bonus", skippedBonus).
+			Int("sample", skippedSample).
+			Msg("Filtered out bonus/sample files")
 	}
 
 	c.logger.Debug().

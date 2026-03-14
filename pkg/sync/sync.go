@@ -436,6 +436,17 @@ func (s *Service) buildCandidatesInto(torrents []*provider.Torrent, downloadMap 
 			// from language codes (e.g. "aze (2025)", "fre (2025)")
 			isVid := isVideo(download.Filename)
 
+			// Skip sample files (e.g., "Sample.mkv")
+			if isVid && isSampleFile(download.Filename) {
+				if stats != nil {
+					stats.FilteredOther++
+				}
+				s.logger.Debug().
+					Str("filename", download.Filename).
+					Msg("Skipping sample file")
+				continue
+			}
+
 			// Apply size filter to videos
 			if isVid && download.Filesize < minSize {
 				if stats != nil {

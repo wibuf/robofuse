@@ -211,6 +211,19 @@ func cleanTitle(title string) string {
 	return strings.TrimSpace(title)
 }
 
+// stripGroup removes the release group name from the end of a title
+// if ptt-go extracted it but left it in the title string.
+// e.g., title="Research A True Life Adventure Grym", group="Grym" → "Research A True Life Adventure"
+func stripGroup(title, group string) string {
+	if group == "" || title == "" {
+		return title
+	}
+	if strings.HasSuffix(strings.ToLower(title), " "+strings.ToLower(group)) {
+		title = strings.TrimSpace(title[:len(title)-len(group)-1])
+	}
+	return title
+}
+
 // toTitleCase converts "ONE PIECE" to "One Piece".
 func toTitleCase(s string) string {
 	words := strings.Fields(s)
@@ -322,7 +335,7 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 // getContentTypeAndPath determines content type and destination path.
 func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string) (string, string) {
 	// Extract info from filename
-	fTitle := cleanTitle(parsed.Title)
+	fTitle := stripGroup(cleanTitle(parsed.Title), parsed.Group)
 	fYear := parsed.Year
 	fSeason := parsed.Seasons
 	fEpisode := parsed.Episodes
@@ -335,7 +348,11 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 	var pSeason, pEpisode []int
 	pAnime := false
 	if parentParsed != nil && !isHexHash(parentParsed.Title) {
-		pTitle = cleanTitle(parentParsed.Title)
+		pGroup := ""
+		if parentParsed != nil {
+			pGroup = parentParsed.Group
+		}
+		pTitle = stripGroup(cleanTitle(parentParsed.Title), pGroup)
 		pYear = parentParsed.Year
 		pSeason = parentParsed.Seasons
 		pEpisode = parentParsed.Episodes
