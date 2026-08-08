@@ -9,7 +9,7 @@ When running in Claude Code (CLI or Web), you have MCP tools available that wrap
 ### GitPilot MCP Server (33 tools)
 Issues: `create_issue`, `list_issues`, `get_issue`, `update_issue`, `close_issue`, `reopen_issue`, `comment_on_issue`
 PRs: `create_pr`, `list_prs`, `get_pr`, `update_pr`, `comment_on_pr`, `close_pr`
-Repos: `list_repos`, `get_repo`, `list_branches`, `delete_branch`, `list_commits`, `pull_repo`, `rollback_repo`
+Repos: `list_repos`, `get_repo`, `list_branches`, `delete_branch`, `list_commits`, `pull_repo`, `rollback_repo`, `read_file`, `clone_repo`
 Deploy: `merge_branch`, `sync_branch`, `resolve_conflicts`, `abort_merge`, `deploy`
 Services: `list_services`, `services_status`, `service_logs`, `start_service`, `stop_service`, `restart_service`
 System: `system_status`, `check_updates`
@@ -312,17 +312,36 @@ curl -X POST https://pilot.grit.bot/api/services/1/restart
 
 ### Issues
 
+**Addressing issues (#721):** ALWAYS use the repo-scoped routes with the **GitHub issue number** — this is what you see on GitHub and in `github_issue` from the create response:
+
+```bash
+# Close GooseFlix GitHub issue #897 (repo id 6)
+curl -X POST https://pilot.grit.bot/api/repos/6/issues/897/close
+
+# Or scope by repo name on the legacy route (body or query string)
+curl -X POST https://pilot.grit.bot/api/issues/897/close \
+  -H "Content-Type: application/json" -d '{"repo": "GooseFlix"}'
+```
+
+⚠️ On the legacy `/api/issues/<id>/...` routes WITHOUT a repo scope, `<id>` is GitPilot's **internal DB id** (the `id` field, global across all repos) — NOT the GitHub number. Passing a GitHub number there can silently hit an unrelated issue in a different repo.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/issues` | List all issues |
 | GET | `/api/issues?repo=X&state=open` | Filter by repo and state |
 | POST | `/api/issues` | Create issue |
-| GET | `/api/issues/<id>` | Get single issue |
-| PUT | `/api/issues/<id>` | Update issue |
-| POST | `/api/issues/<id>/push` | Push updates to GitHub |
-| POST | `/api/issues/<id>/close` | Close issue |
-| POST | `/api/issues/<id>/reopen` | Reopen issue |
-| POST | `/api/issues/<id>/comment` | Add comment |
+| GET | `/api/repos/<repo_id>/issues/<number>` | Get issue by GitHub number (**preferred**) |
+| PUT | `/api/repos/<repo_id>/issues/<number>` | Update issue by GitHub number (**preferred**) |
+| POST | `/api/repos/<repo_id>/issues/<number>/close` | Close by GitHub number (**preferred**) |
+| POST | `/api/repos/<repo_id>/issues/<number>/reopen` | Reopen by GitHub number (**preferred**) |
+| POST | `/api/repos/<repo_id>/issues/<number>/comment` | Comment by GitHub number (**preferred**) |
+| POST | `/api/repos/<repo_id>/issues/<number>/push` | Push to GitHub by number (**preferred**) |
+| GET | `/api/issues/<id>` | Get single issue (`<id>` = internal DB id, or GitHub number with `repo` scope) |
+| PUT | `/api/issues/<id>` | Update issue (same addressing) |
+| POST | `/api/issues/<id>/push` | Push updates to GitHub (same addressing) |
+| POST | `/api/issues/<id>/close` | Close issue (same addressing) |
+| POST | `/api/issues/<id>/reopen` | Reopen issue (same addressing) |
+| POST | `/api/issues/<id>/comment` | Add comment (same addressing) |
 
 ### Pull Requests
 
@@ -364,9 +383,69 @@ curl -X POST https://pilot.grit.bot/api/repos/7/prs/329/comment \
 | PUT | `/api/repos/<id>` | Update repo settings (local_path, color, etc.) |
 | GET | `/api/repos/<id>/commits` | List recent commits |
 | GET | `/api/repos/<id>/branches_list` | List all branches |
-| DELETE | `/api/repos/<id>/branches` | Delete branch |
+| DELETE | `/api/repos/<id>/branches` | Delete branch (local **and** remote) |
 | POST | `/api/repos/<id>/rollback` | Rollback to commit |
 | POST | `/api/repos/<id>/pull` | Pull latest from remote |
+| GET | `/api/repos/<id>/file` | Read a file or list a directory |
+| POST | `/api/repos/<id>/clone` | Clone repo to a local path |
+
+**Delete a branch (#748):**
+```bash
+# Deletes the branch locally AND on GitHub
+curl -X DELETE https://pilot.grit.bot/api/repos/2/branches \
+  -H "Content-Type: application/json" \
+  -d '{"branch": "claude/old-feature-abc123"}'
+```
+
+**Response — read the per-target results, not just the top-level status:**
+```json
+{
+  "status": "success",
+  "branch": "claude/old-feature-abc123",
+  "local": {"status": "deleted"},
+  "remote": {"status": "deleted", "via": "github_api"},
+  "message": "Deleted 'claude/old-feature-abc123' (local and remote)"
+}
+```
+
+Per-target status values:
+- `deleted` — it existed, it's gone now
+- `absent` — nothing was there to delete (not an error)
+- `skipped` — not requested, or impossible (e.g. no local checkout)
+- `failed` — the delete did NOT happen; see that target's `error`
+
+The endpoint returns `500` with `"status": "error"` if either requested target failed, so
+a `200` means nothing was left behind. Options: `{"local": false}` or `{"remote": false}`
+to target one side only, `{"force_protected": true}` to allow deleting `main`/`master`/`develop`
+(refused by default).
+
+**Read a file from any repo (#528):**
+```bash
+# Read a file (working tree)
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py"
+
+# Read specific lines
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&lines=1-50"
+
+# Read from a specific branch
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&branch=main"
+
+# List a directory
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts"
+```
+
+**Clone a repo locally (#528):**
+```bash
+# Shallow clone to /tmp
+curl -X POST https://pilot.grit.bot/api/repos/6/clone \
+  -H "Content-Type: application/json" \
+  -d '{"depth": 1}'
+
+# Clone specific branch to custom path
+curl -X POST https://pilot.grit.bot/api/repos/6/clone \
+  -H "Content-Type: application/json" \
+  -d '{"dest": "/tmp/GooseFlix", "branch": "main", "depth": 1}'
+```
 
 ### Branch Merging
 
@@ -424,6 +503,17 @@ curl -X POST https://pilot.grit.bot/api/repos/7/sync_branch \
 ```
 
 Use this after a PR is merged to bring the working branch back in sync with main, preventing merge conflicts on subsequent commits. The `"with"` parameter defaults to `"main"` if omitted.
+
+**Non-destructive by default (#681):** If the branch has commits that are not yet in the source branch, `sync_branch` refuses with a `409` and lists the at-risk commits, rather than force-resetting and discarding pushed work:
+```json
+{
+  "status": "refused",
+  "error": "Branch has commits not present in source; sync would discard them.",
+  "unmerged_commits": ["ac100fe ..."],
+  "hint": "These commits would be lost. Merge them first, or pass force:true to override."
+}
+```
+To intentionally discard those commits and reset anyway, pass `"force": true`.
 
 ### Agent Settings
 
