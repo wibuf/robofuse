@@ -2,9 +2,11 @@
 
 GitPilot provides GitHub issue and PR management via API. This document explains how AI agents should use it.
 
-## MCP Tools (Preferred)
+## MCP Tools (local CLI sessions only)
 
-When running in Claude Code (CLI or Web), you have MCP tools available that wrap the GitPilot API. **Prefer MCP tools over raw curl commands** — they're cleaner and handle errors better.
+**These tools exist only in a local Claude Code CLI session that has the GitPilot MCP server configured.** In that session, prefer them over raw curl commands — they're cleaner and handle errors better.
+
+**In a Claude Code web session, none of the MCP tools or slash commands listed below exist.** Do not search the tool registry for them; use the HTTP API directly via curl, exactly as documented in the rest of this file. Everything GitPilot can do is reachable over HTTP.
 
 ### GitPilot MCP Server (33 tools)
 Issues: `create_issue`, `list_issues`, `get_issue`, `update_issue`, `close_issue`, `reopen_issue`, `comment_on_issue`
@@ -46,6 +48,16 @@ Playwright: `browser_navigate`, `browser_click`, `browser_type`, `browser_screen
 | jellyfin-web | 11 | `/api/repos/11/create_pr` |
 | BSucksBux | 13 | `/api/repos/13/create_pr` |
 | Neren | 14 | `/api/repos/14/create_pr` |
+| robofuse | 16 | `/api/repos/16/create_pr` |
+| Grit-Admin | 17 | `/api/repos/17/create_pr` |
+| Grit-Money | 18 | `/api/repos/18/create_pr` |
+| Grit-Books | 19 | `/api/repos/19/create_pr` |
+| grit-fit-app | 20 | `/api/repos/20/create_pr` |
+| Wholphin | 21 | `/api/repos/21/create_pr` |
+| Life | 22 | `/api/repos/22/create_pr` |
+
+IDs are not contiguous and new repos are added over time. If a repo you need is
+missing here, look it up rather than guessing: `curl "https://pilot.grit.bot/api/repos"`.
 
 ---
 
@@ -266,15 +278,22 @@ If GitPilot is down, inform the user and use regular git/GitHub workflow.
 Always check if the PR was already merged before pushing additional commits:
 
 ```bash
-# Check PR status
-curl "https://pilot.grit.bot/api/prs?repo=GitPilot"
+# Check PR status (use the repo you are working in)
+curl "https://pilot.grit.bot/api/prs?repo=<repo>"
 ```
 
-If the PR is already merged:
+If the PR is already merged, restart the branch from the new main — but do not
+discard work that was never merged:
+
 1. Fetch latest main: `git fetch origin main`
-2. Reset branch to main: `git reset --hard origin/main`
-3. Make your changes on the fresh branch
-4. Create a new PR
+2. Check whether the branch still carries commits of its own:
+   `git log --oneline origin/main..HEAD`
+3. **If that prints nothing** (the branch holds only already-merged history), reset
+   is safe: `git reset --hard origin/main`
+4. **If it prints commits**, they are not in main and a reset would silently drop
+   them. Rebase them onto the new base instead: `git rebase origin/main`
+5. Make your changes on the refreshed branch
+6. Create a new PR — a merged PR cannot track new work
 
 ---
 
@@ -302,8 +321,9 @@ curl -X POST https://pilot.grit.bot/api/repos/7/merge_branch \
 # Pull latest changes locally
 curl -X POST https://pilot.grit.bot/api/repos/7/pull
 
-# Restart service after pull
-curl -X POST https://pilot.grit.bot/api/services/1/restart
+# Restart service after pull — look the id up first, ids differ per repo
+curl "https://pilot.grit.bot/api/services?repo_id=<repo_id>"
+curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart
 ```
 
 ---
@@ -558,8 +578,15 @@ Manage running services/scripts for repositories. Each repo can have multiple se
 **Finding Service IDs:** Query the services list to find the correct service ID:
 ```bash
 curl "https://pilot.grit.bot/api/services"
-# Returns: [{"id": 1, "name": "CryptoBot API", "repo_id": 2, ...}, ...]
+# Returns: [{"id": 3, "name": "Crypto", "repo_id": 2, ...}, ...]
+
+# Or filter to one repo's services
+curl "https://pilot.grit.bot/api/services?repo_id=2"
 ```
+
+Never hardcode a service id from an example — a repo can have several services
+(GooseFlix has ten), and the ids are not related to the repo id. Always look the
+id up for the repo you are deploying.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -655,8 +682,9 @@ curl -X POST https://pilot.grit.bot/api/repos/6/merge_branch \
 # 2. Pull latest changes to the server's local repo
 curl -X POST https://pilot.grit.bot/api/repos/6/pull
 
-# 3. Restart the affected service to pick up changes
-curl -X POST https://pilot.grit.bot/api/services/3/restart
+# 3. Find the service for this repo, then restart it to pick up changes
+curl "https://pilot.grit.bot/api/services?repo_id=6"   # -> pick the right id
+curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart
 ```
 
 **Note:** The `merge_branch` endpoint uses an isolated git worktree, so it won't interfere with the running service's files. Always pull after merge to update the actual repo.
@@ -693,11 +721,13 @@ curl -X POST https://pilot.grit.bot/api/repos/2/merge_branch \
 # 6. Pull to server
 curl -X POST https://pilot.grit.bot/api/repos/2/pull
 
-# 7. Find and restart service
+# 7. Find and restart service (CryptoBot's is id 3, "Crypto" — verify, don't assume)
 curl "https://pilot.grit.bot/api/services?repo_id=2"  # Find service ID
-curl -X POST https://pilot.grit.bot/api/services/1/restart
+curl -X POST https://pilot.grit.bot/api/services/3/restart
 
-# 8. Report back to user
+# 8. Check the restart response before reporting success. A POST to a service id
+#    that does not exist fails; reporting "deployed" on that is a false claim
+#    about production while the old process is still running.
 # "Fixed and deployed. CryptoBot service restarted. PR: https://github.com/..."
 ```
 
@@ -714,6 +744,21 @@ curl -X POST https://pilot.grit.bot/api/services/1/restart
   "push": true,           // Push commits to remote (default: true)
   "repos": ["Repo1"],     // Sync to specific repos only (default: all)
   "dry_run": false        // Preview without making changes (default: false)
+}
+```
+
+**CLAUDE.md is the only file this endpoint writes (#770).** A repo's own
+conventions live in `.claude/<repo>.md`, which sync never touches. Each result
+entry reports that file under `preserves`, so `dry_run: true` shows what would
+be kept as well as what would be replaced:
+
+```json
+{
+  "synced": [
+    {"repo": "CryptoBot", "status": "would sync (dry run)",
+     "preserves": [".claude/CryptoBot.md"]}
+  ],
+  "summary": {"preserved_files": 1, ...}
 }
 ```
 
@@ -783,3 +828,24 @@ curl "https://pilot.grit.bot/api/system/logs?lines=100"
 - **API Base**: https://pilot.grit.bot/api
 
 GitPilot syncs with GitHub every 60 seconds automatically.
+
+---
+
+## This Repo's Own Conventions
+
+Everything above is shared: `sync_claude_md` pushes this same file to every
+managed repo, so nothing repo-specific can live in it.
+
+**Before starting work, check for `.claude/<repo>.md` and read it if it exists**
+— e.g. `.claude/CryptoBot.md` in CryptoBot. That file holds the conventions that
+actually govern work in this repo: verification protocol, secrets handling,
+money-path rules, honesty conventions carried by issue number, branch naming.
+
+```bash
+ls .claude/*.md 2>/dev/null && cat .claude/*.md
+```
+
+Sync never writes that path — only this file — so anything you put there
+survives. Rules there are specific to this repo and take precedence over the
+general guidance above. If it does not exist, the shared rules are all that
+apply.
