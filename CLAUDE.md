@@ -2,19 +2,46 @@
 
 GitPilot provides GitHub issue and PR management via API. This document explains how AI agents should use it.
 
-## MCP Tools (local CLI sessions only)
+## MCP Tools
 
-**These tools exist only in a local Claude Code CLI session that has the GitPilot MCP server configured.** In that session, prefer them over raw curl commands — they're cleaner and handle errors better.
+GitPilot's MCP server exposes 39 tools over two transports. Both serve
+the same tool list from the same server — the transport is the only difference.
 
-**In a Claude Code web session, none of the MCP tools or slash commands listed below exist.** Do not search the tool registry for them; use the HTTP API directly via curl, exactly as documented in the rest of this file. Everything GitPilot can do is reachable over HTTP.
+**Local CLI session (stdio).** `mcp_server.py`, spawned as a child process by
+Claude Code. In that session, prefer these tools over raw curl — they're
+cleaner and handle errors better.
 
-### GitPilot MCP Server (33 tools)
-Issues: `create_issue`, `list_issues`, `get_issue`, `update_issue`, `close_issue`, `reopen_issue`, `comment_on_issue`
+**Claude Code web session (streamable HTTP).** Add GitPilot as a remote MCP
+server (#783):
+
+```
+URL:    https://pilot.grit.bot/mcp
+Header: Authorization: Bearer $GITPILOT_API_TOKEN
+```
+
+Same token as the HTTP API (see API Authentication below), and it comes from
+your environment, never from this repo. Every MCP request needs it — unlike
+the HTTP API, there is no open read half here, because one POST carries
+whichever call the client chose.
+
+If the MCP connection is not available to you, use the HTTP API directly via
+curl, exactly as documented in the rest of this file. Everything GitPilot can
+do is reachable over HTTP either way.
+
+One tool covers starting, stopping and restarting a service: `service_action`
+takes the action as an argument.
+
+### GitPilot MCP Server (39 tools)
+Issues: `create_issue`, `list_issues`, `get_issue`, `update_issue`, `close_issue`, `comment_on_issue`
 PRs: `create_pr`, `list_prs`, `get_pr`, `update_pr`, `comment_on_pr`, `close_pr`
-Repos: `list_repos`, `get_repo`, `list_branches`, `delete_branch`, `list_commits`, `pull_repo`, `rollback_repo`, `read_file`, `clone_repo`
-Deploy: `merge_branch`, `sync_branch`, `resolve_conflicts`, `abort_merge`, `deploy`
-Services: `list_services`, `services_status`, `service_logs`, `start_service`, `stop_service`, `restart_service`
-System: `system_status`, `check_updates`
+Repos: `list_branches`, `delete_branch`, `pull_repo`
+Deploy: `merge_branch`, `sync_branch`, `deploy`
+Services: `list_services`, `services_status`, `service_logs`, `service_action`
+Agent tasks: `submit_agent_task`, `get_agent_task`, `list_agent_tasks`, `cancel_agent_task`, `agent_tasks_status`
+Reminders: `create_reminder`, `list_reminders`
+Dashboard: `dashboard_stats`, `dashboard_activity`
+System: `system_status`, `system_logs`
+Claude sessions: `start_claude_session`, `list_claude_sessions`, `get_claude_session`, `read_claude_session`, `stop_claude_session`, `resume_claude_session`
 
 ### Browser MCP Server (9 tools)
 HTTP: `fetch_page`, `search_web`, `fetch_json`
@@ -57,7 +84,39 @@ Playwright: `browser_navigate`, `browser_click`, `browser_type`, `browser_screen
 | Life | 22 | `/api/repos/22/create_pr` |
 
 IDs are not contiguous and new repos are added over time. If a repo you need is
-missing here, look it up rather than guessing: `curl "https://pilot.grit.bot/api/repos"`.
+missing here, look it up rather than guessing:
+`curl "https://pilot.grit.bot/api/repos" -H "Authorization: Bearer $GITPILOT_API_TOKEN"`.
+
+---
+
+## API Authentication (#781)
+
+Every mutating call (POST/PUT/PATCH/DELETE) to `https://pilot.grit.bot/api` needs a bearer token:
+
+```bash
+-H "Authorization: Bearer $GITPILOT_API_TOKEN"
+```
+
+**The token comes from your environment, not from this repository.** It is in
+`$GITPILOT_API_TOKEN`. Sessions started on the GitPilot box get it from that
+box. **Claude Code web sessions run in the cloud and get it only if the
+operator has added `GITPILOT_API_TOKEN` to the web environment's variables**;
+without it a web session can still read, but every create, update, merge and
+restart comes back `401`. On the server the token lives in `secrets.json`, which is gitignored and must never be committed —
+do not read it out of a file, do not paste its value into an issue, a PR, a
+commit message or a log line, and do not hard-code it in a script. Reference it
+as `$GITPILOT_API_TOKEN` and let the shell expand it. If the variable is not
+set in your environment, say so and ask the operator rather than looking for
+the value yourself.
+
+GET requests do not need the token today (reads are open unless the operator
+sets `GITPILOT_READ_AUTH=1`), but sending it on every call is harmless and is
+what the examples below do.
+
+A `401` with `"error": "Authentication required"` means the header was missing
+or wrong. A `429` means five failed attempts from your IP within a minute —
+wait for the `Retry-After` interval rather than retrying immediately, and
+check the token rather than the request.
 
 ---
 
@@ -68,12 +127,14 @@ missing here, look it up rather than guessing: `curl "https://pilot.grit.bot/api
 **Check previous PR status before starting new work.** If you previously gave the user a PR link in this session, check whether that PR is still open or has been merged/closed before beginning any new task. Use the GitPilot API to check:
 
 ```bash
-curl "https://pilot.grit.bot/api/repos/<id>/prs/<pr_number>"
+curl "https://pilot.grit.bot/api/repos/<id>/prs/<pr_number>" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 If the PR was merged, sync your branch with main before starting new work:
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/<id>/sync_branch \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/your-branch-sessionId", "with": "main"}'
 ```
@@ -90,6 +151,7 @@ Follow these 5 steps for any issue-tracked work:
 
 ```bash
 curl -X POST https://pilot.grit.bot/api/issues \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "repo": "GitPilot",
@@ -139,6 +201,7 @@ git push -u origin claude/fix-auth-bug-sessionId
 
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/7/create_pr \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "branch": "claude/fix-auth-bug-sessionId",
@@ -240,6 +303,7 @@ When `merge_branch` encounters conflicts, it returns a 409 response:
 **Resolve conflicts:**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/7/resolve_conflicts \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "resolutions": [
@@ -255,7 +319,8 @@ Resolution options:
 
 **Abort merge:**
 ```bash
-curl -X POST https://pilot.grit.bot/api/repos/7/abort_merge
+curl -X POST https://pilot.grit.bot/api/repos/7/abort_merge \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 ---
@@ -264,6 +329,8 @@ curl -X POST https://pilot.grit.bot/api/repos/7/abort_merge
 
 | Error | Cause | Solution |
 |-------|-------|----------|
+| `401` on any API call | Missing or wrong bearer token | Send `-H "Authorization: Bearer $GITPILOT_API_TOKEN"`; the token comes from your environment (see API Authentication) |
+| `429` on any API call | 5 failed auth attempts from your IP in a minute | Wait for `Retry-After`; check the token rather than retrying |
 | `403` on git push | Wrong branch name | Must start with `claude/` and end with session ID |
 | `404` on API call | Wrong repo name | Check spelling (case-insensitive) |
 | `400` on create issue | Missing fields | Include `repo`, `title`, `type` |
@@ -279,7 +346,8 @@ Always check if the PR was already merged before pushing additional commits:
 
 ```bash
 # Check PR status (use the repo you are working in)
-curl "https://pilot.grit.bot/api/prs?repo=<repo>"
+curl "https://pilot.grit.bot/api/prs?repo=<repo>" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 If the PR is already merged, restart the branch from the new main — but do not
@@ -301,29 +369,36 @@ discard work that was never merged:
 
 ```bash
 # List open issues
-curl "https://pilot.grit.bot/api/issues?repo=GitPilot&state=open"
+curl "https://pilot.grit.bot/api/issues?repo=GitPilot&state=open" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Create issue (AI agents should always skip_review)
 curl -X POST https://pilot.grit.bot/api/issues \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"repo": "GitPilot", "title": "...", "type": "feat", "body": "...", "skip_review": true}'
 
 # Create PR
 curl -X POST https://pilot.grit.bot/api/repos/7/create_pr \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/...", "title": "...", "body": "..."}'
 
 # Direct merge (uses isolated worktree)
 curl -X POST https://pilot.grit.bot/api/repos/7/merge_branch \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/...", "into": "main"}'
 
 # Pull latest changes locally
-curl -X POST https://pilot.grit.bot/api/repos/7/pull
+curl -X POST https://pilot.grit.bot/api/repos/7/pull \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Restart service after pull — look the id up first, ids differ per repo
-curl "https://pilot.grit.bot/api/services?repo_id=<repo_id>"
-curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart
+curl "https://pilot.grit.bot/api/services?repo_id=<repo_id>" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
+curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 ---
@@ -336,10 +411,12 @@ curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart
 
 ```bash
 # Close GooseFlix GitHub issue #897 (repo id 6)
-curl -X POST https://pilot.grit.bot/api/repos/6/issues/897/close
+curl -X POST https://pilot.grit.bot/api/repos/6/issues/897/close \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Or scope by repo name on the legacy route (body or query string)
 curl -X POST https://pilot.grit.bot/api/issues/897/close \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" -d '{"repo": "GooseFlix"}'
 ```
 
@@ -377,12 +454,14 @@ curl -X POST https://pilot.grit.bot/api/issues/897/close \
 
 **Get PR details:**
 ```bash
-curl "https://pilot.grit.bot/api/repos/7/prs/329"
+curl "https://pilot.grit.bot/api/repos/7/prs/329" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Update PR title/body:**
 ```bash
 curl -X PUT https://pilot.grit.bot/api/repos/7/prs/329 \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"title": "New title", "body": "Updated description"}'
 ```
@@ -390,6 +469,7 @@ curl -X PUT https://pilot.grit.bot/api/repos/7/prs/329 \
 **Add comment to PR:**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/7/prs/329/comment \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"body": "Looks good, merging now."}'
 ```
@@ -413,6 +493,7 @@ curl -X POST https://pilot.grit.bot/api/repos/7/prs/329/comment \
 ```bash
 # Deletes the branch locally AND on GitHub
 curl -X DELETE https://pilot.grit.bot/api/repos/2/branches \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/old-feature-abc123"}'
 ```
@@ -442,27 +523,33 @@ to target one side only, `{"force_protected": true}` to allow deleting `main`/`m
 **Read a file from any repo (#528):**
 ```bash
 # Read a file (working tree)
-curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py"
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Read specific lines
-curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&lines=1-50"
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&lines=1-50" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Read from a specific branch
-curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&branch=main"
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts/app.py&branch=main" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # List a directory
-curl "https://pilot.grit.bot/api/repos/6/file?path=scripts"
+curl "https://pilot.grit.bot/api/repos/6/file?path=scripts" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Clone a repo locally (#528):**
 ```bash
 # Shallow clone to /tmp
 curl -X POST https://pilot.grit.bot/api/repos/6/clone \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"depth": 1}'
 
 # Clone specific branch to custom path
 curl -X POST https://pilot.grit.bot/api/repos/6/clone \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"dest": "/tmp/GooseFlix", "branch": "main", "depth": 1}'
 ```
@@ -481,6 +568,7 @@ curl -X POST https://pilot.grit.bot/api/repos/6/clone \
 If you encounter errors like `'...worktree' is not a working tree` or `not a git repository: .git/worktrees/...`, call this endpoint to clean up stale references:
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/7/prune_worktrees \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -518,6 +606,7 @@ curl -X POST https://pilot.grit.bot/api/repos/7/prune_worktrees \
 **sync_branch - Reset a branch to match another:**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/7/sync_branch \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/my-feature-xyz", "with": "main"}'
 ```
@@ -534,6 +623,66 @@ Use this after a PR is merged to bring the working branch back in sync with main
 }
 ```
 To intentionally discard those commits and reset anyway, pass `"force": true`.
+
+### Claude CLI Sessions (#777)
+
+Start a Claude Code CLI session on the GitPilot server or on a remote agent's
+machine (e.g. `Jelly`), launched the way the operator's desktop shortcut does:
+
+```
+cmd.exe /k "claude --dangerously-skip-permissions --chrome --remote-control <name> --session-id <uuid>"
+```
+
+The console opens on the logged-in desktop and runs as that user, so Claude has
+their login and Chrome profile. If nobody is logged on, the start is refused.
+
+**You talk to the session through Remote Control, by its `rc_name`**, not
+through GitPilot. From a Claude Code web session it is listed among your agents
+labelled *Remote Control*; message it by that name. It also shows at
+claude.ai/code and in the Claude app. GitPilot starts, lists, reads (from the
+transcript file), stops and resumes sessions.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/claude-sessions` | List sessions with live status (`?server=`, `?status=`) |
+| POST | `/api/claude-sessions` | Start a session |
+| GET | `/api/claude-sessions/<id>` | One session, live status |
+| GET | `/api/claude-sessions/<id>/transcript` | Latest turns (`?limit=20`, max 200) |
+| POST | `/api/claude-sessions/<id>/stop` | Close its console; the conversation is kept |
+| POST | `/api/claude-sessions/<id>/resume` | Reopen it with `claude --resume` |
+
+**Every call here needs the token, GETs included**: a transcript can carry
+anything the session saw.
+
+```bash
+curl -X POST https://pilot.grit.bot/api/claude-sessions \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"server": "Jelly", "repo": "CryptoBot", "prompt": "Investigate the failing balance check"}'
+```
+
+Body: `server` (`local` or a remote server's name or id), `prompt` (optional
+first task), `repo`, `cwd` (default: the host's workspace, `C:\claude`, or
+`GITPILOT_CLAUDE_WORKSPACE`), `name`, `model`, `chrome` and `skip_permissions`
+(both default `true`, as in the shortcut), `window` (`minimized` or `normal`),
+`accept_messages` (default `true`).
+
+**Messages to a session.** A session that bypasses permission prompts holds
+every message from another session until someone approves it at its console.
+Sessions GitPilot starts are launched with `--settings` carrying
+`crossSessionInbound: accept`, so a web session's message is delivered straight
+away; pass `accept_messages: false` for one that should keep holding. This
+applies only to sessions GitPilot starts, not to other sessions on the machine.
+
+**Replies come back through the transcript, not as a message.** A session on
+the GitPilot box or Jelly has no `send_message` tool, so it cannot message you
+back. Send it work with `send_message` (Claude Code Remote MCP, by the session
+id shown in your session list), then read its answer with `read_claude_session`
+or `GET /api/claude-sessions/<id>/transcript`. Tell it so in your message, or it
+will spend a turn looking for a way to reply.
+
+Do not point a session at a live service checkout unless you mean to: it runs
+with full permissions.
 
 ### Agent Settings
 
@@ -577,11 +726,13 @@ Manage running services/scripts for repositories. Each repo can have multiple se
 
 **Finding Service IDs:** Query the services list to find the correct service ID:
 ```bash
-curl "https://pilot.grit.bot/api/services"
+curl "https://pilot.grit.bot/api/services" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 # Returns: [{"id": 3, "name": "Crypto", "repo_id": 2, ...}, ...]
 
 # Or filter to one repo's services
-curl "https://pilot.grit.bot/api/services?repo_id=2"
+curl "https://pilot.grit.bot/api/services?repo_id=2" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 Never hardcode a service id from an example — a repo can have several services
@@ -607,6 +758,7 @@ id up for the repo you are deploying.
 **Create service:**
 ```bash
 curl -X POST https://pilot.grit.bot/api/services \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "repo_id": 6,
@@ -638,20 +790,26 @@ curl -X POST https://pilot.grit.bot/api/services \
 **Service Logs with Filtering (#357):**
 ```bash
 # Get all logs
-curl "https://pilot.grit.bot/api/services/3/logs"
+curl "https://pilot.grit.bot/api/services/3/logs" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Get last 50 lines
-curl "https://pilot.grit.bot/api/services/3/logs?lines=50"
+curl "https://pilot.grit.bot/api/services/3/logs?lines=50" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Filter by severity (error, warn, info - comma-separated)
-curl "https://pilot.grit.bot/api/services/3/logs?level=error"
-curl "https://pilot.grit.bot/api/services/3/logs?level=error,warn"
+curl "https://pilot.grit.bot/api/services/3/logs?level=error" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
+curl "https://pilot.grit.bot/api/services/3/logs?level=error,warn" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Text search (case-insensitive)
-curl "https://pilot.grit.bot/api/services/3/logs?search=timeout"
+curl "https://pilot.grit.bot/api/services/3/logs?search=timeout" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # Combined: last 100 lines, errors only, matching "database"
-curl "https://pilot.grit.bot/api/services/3/logs?lines=100&level=error&search=database"
+curl "https://pilot.grit.bot/api/services/3/logs?lines=100&level=error&search=database" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Logs response:**
@@ -676,15 +834,19 @@ The `GET /api/services/status` endpoint returns health indicators for each runni
 ```bash
 # 1. Merge the PR (uses isolated worktree, won't affect running service)
 curl -X POST https://pilot.grit.bot/api/repos/6/merge_branch \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/my-feature-abc123", "into": "main"}'
 
 # 2. Pull latest changes to the server's local repo
-curl -X POST https://pilot.grit.bot/api/repos/6/pull
+curl -X POST https://pilot.grit.bot/api/repos/6/pull \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # 3. Find the service for this repo, then restart it to pick up changes
-curl "https://pilot.grit.bot/api/services?repo_id=6"   # -> pick the right id
-curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart
+curl "https://pilot.grit.bot/api/services?repo_id=6" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"   # -> pick the right id
+curl -X POST https://pilot.grit.bot/api/services/<service_id>/restart \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Note:** The `merge_branch` endpoint uses an isolated git worktree, so it won't interfere with the running service's files. Always pull after merge to update the actual repo.
@@ -696,6 +858,7 @@ When user says "Fix it and deploy":
 ```bash
 # 1. Create issue
 curl -X POST https://pilot.grit.bot/api/issues \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"repo": "CryptoBot", "title": "Fix 500 error on /balance endpoint", "type": "bug", "body": "API returning 500 on balance check", "skip_review": true}'
 # Save the github_issue number from response
@@ -710,20 +873,25 @@ git push -u origin claude/fix-balance-abc123
 
 # 4. Create PR
 curl -X POST https://pilot.grit.bot/api/repos/2/create_pr \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/fix-balance-abc123", "title": "Fix 500 error on /balance endpoint", "body": "Closes #XX"}'
 
 # 5. Merge PR (user authorized deployment)
 curl -X POST https://pilot.grit.bot/api/repos/2/merge_branch \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"branch": "claude/fix-balance-abc123"}'
 
 # 6. Pull to server
-curl -X POST https://pilot.grit.bot/api/repos/2/pull
+curl -X POST https://pilot.grit.bot/api/repos/2/pull \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # 7. Find and restart service (CryptoBot's is id 3, "Crypto" — verify, don't assume)
-curl "https://pilot.grit.bot/api/services?repo_id=2"  # Find service ID
-curl -X POST https://pilot.grit.bot/api/services/3/restart
+curl "https://pilot.grit.bot/api/services?repo_id=2" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"  # Find service ID
+curl -X POST https://pilot.grit.bot/api/services/3/restart \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 
 # 8. Check the restart response before reporting success. A POST to a service id
 #    that does not exist fails; reporting "deployed" on that is a false claim
@@ -765,6 +933,7 @@ be kept as well as what would be replaced:
 **Example: Sync CLAUDE.md to all repos**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/sync_claude_md \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -772,6 +941,7 @@ curl -X POST https://pilot.grit.bot/api/repos/sync_claude_md \
 **Example: Preview sync (dry run)**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/sync_claude_md \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
 ```
@@ -779,6 +949,7 @@ curl -X POST https://pilot.grit.bot/api/repos/sync_claude_md \
 **Example: Sync to specific repos only**
 ```bash
 curl -X POST https://pilot.grit.bot/api/repos/sync_claude_md \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"repos": ["CryptoBot", "GooseFlix"]}'
 ```
@@ -797,7 +968,8 @@ GitPilot can monitor and update itself, pull updates, and restart automatically.
 
 **Check for updates:**
 ```bash
-curl -X POST https://pilot.grit.bot/api/system/check-updates
+curl -X POST https://pilot.grit.bot/api/system/check-updates \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Response:**
@@ -812,12 +984,14 @@ curl -X POST https://pilot.grit.bot/api/system/check-updates
 
 **Trigger update and restart:**
 ```bash
-curl -X POST https://pilot.grit.bot/api/system/update
+curl -X POST https://pilot.grit.bot/api/system/update \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 **Get system logs:**
 ```bash
-curl "https://pilot.grit.bot/api/system/logs?lines=100"
+curl "https://pilot.grit.bot/api/system/logs?lines=100" \
+  -H "Authorization: Bearer $GITPILOT_API_TOKEN"
 ```
 
 ---
