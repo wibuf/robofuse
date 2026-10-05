@@ -98,11 +98,20 @@ Every mutating call (POST/PUT/PATCH/DELETE) to `https://pilot.grit.bot/api` need
 ```
 
 **The token comes from your environment, not from this repository.** It is in
-`$GITPILOT_API_TOKEN`. Sessions started on the GitPilot box get it from that
-box. **Claude Code web sessions run in the cloud and get it only if the
-operator has added `GITPILOT_API_TOKEN` to the web environment's variables**;
-without it a web session can still read, but every create, update, merge and
-restart comes back `401`. On the server the token lives in `secrets.json`, which is gitignored and must never be committed —
+`$GITPILOT_API_TOKEN`, and how it gets there depends on where you run:
+
+- **CLI sessions on the GitPilot box:** it is set in the Windows user
+  environment, so every session started there has it.
+- **CLI sessions on a machine with a GitPilot remote agent (e.g. Jelly):**
+  GitPilot sends the token to the agent each time it connects, and the agent
+  saves it to that machine's user environment. Sessions started after that
+  have it; a session that was already running needs a restart.
+- **Claude Code web sessions:** only if the operator has added
+  `GITPILOT_API_TOKEN` to the cloud environment's variables. Without it a web
+  session can still read, but every create, update, merge and restart comes
+  back `401`.
+
+On the server the token lives in `secrets.json`, which is gitignored and must never be committed —
 do not read it out of a file, do not paste its value into an issue, a PR, a
 commit message or a log line, and do not hard-code it in a script. Reference it
 as `$GITPILOT_API_TOKEN` and let the shell expand it. If the variable is not
